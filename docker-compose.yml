@@ -9,6 +9,7 @@ services:
       - .env
     volumes:
       - .:/app
+      - ./app/telegram:/app/app/telegram
     ports:
       - "8000:8000"
     depends_on:
@@ -23,11 +24,13 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: pulsetg_worker
-    command: celery -A backend.core.celery_app:celery_app worker --loglevel=INFO -Q audits
+    # pool=solo нужен для стабильной работы с async-кодом и event loop внутри задач.
+    command: celery -A backend.core.celery_app:celery_app worker --loglevel=INFO -Q audits --pool=solo
     env_file:
       - .env
     volumes:
       - .:/app
+      - ./app/telegram:/app/app/telegram
     depends_on:
       postgres:
         condition: service_healthy

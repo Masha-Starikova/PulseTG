@@ -19,7 +19,14 @@ logger = logging.getLogger(__name__)
 def run_channel_audit(self, audit_id: str) -> dict:
     """Запуск полного цикла аудита в Celery-воркере."""
 
-    return asyncio.run(_run_channel_audit(audit_id))
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # В некоторых окружениях Celery event loop может быть не инициализирован.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(_run_channel_audit(audit_id))
 
 
 async def _run_channel_audit(audit_id: str) -> dict:

@@ -1,54 +1,78 @@
-from dataclasses import dataclass
+import json
+from typing import Any
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
 
 from backend.core.config import settings
 
 
-@dataclass(slots=True)
-class AIInsightsService:
-    """Генерация практических рекомендаций по результатам аналитики."""
+class AIClientError(RuntimeError):
+    """Ошибки при работе с OpenAI API."""
 
-    model: str = settings.openai_model
 
-    def __post_init__(self) -> None:
-        self._client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            timeout=settings.openai_timeout_seconds,
+class AIClient:
+    """Низкоуровневый клиент для генерации инсайтов через OpenAI."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        resolved_api_key = api_key or settings.openai_api_key
+        if not resolved_api_key:
+            raise AIClientError("OPENAI_API_KEY не задан в .env")
+
+        self.model = model or settings.openai_model
+        self.client = AsyncOpenAI(
+            api_key=resolved_api_key,
+            timeout=timeout_seconds or settings.openai_timeout_seconds,
         )
 
-    async def generate_recommendations(self, metrics: dict) -> dict:
-        # Возвращаем детерминированный fallback, если AI-ключ не задан.
-        if not settings.openai_api_key:
-            return {
-                "summary": "AI-ключ не настроен, сгенерирован базовый отчет.",
-                "recommendations": [
-                    "Увеличьте частоту публикаций в прайм-тайм вашей аудитории.",
-                    "Добавьте в контент-план больше интерактивных постов.",
-                    "Тестируйте форматы с высоким retention и сохраняйте лучшие практики.",
-                ],
-            }
+    async def generate_insight(self, structured_data: dict[str, Any]) -> str:
+        """Генерирует текстовый инсайт по структурированным метрикам."""
 
+        payload = json.dumps(structured_data, ensure_ascii=False, indent=2)
         prompt = (
-            "Ты аналитик Telegram-каналов. "
-            "На основе метрик верни краткий вывод и 3 рекомендации. "
-            f"Метрики: {metrics}"
+            "Ты senior-аналитик Telegram-каналов. "
+            "Сформируй краткий аудит и actionable-рекомендации на русском языке. "
+            "Ответ структурируй так: 1) Краткий вывод, 2) Сильные стороны, "
+            "3) Риски, 4) 3-5 конкретных рекомендаций.\n\n"
+            f"Входные данные:\n{payload}"
         )
 
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "Отвечай по-русски в деловом стиле."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "Отвечай деловым и конкретным стилем."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+            )
+        except AuthenticationError as exc:
+            raise AIClientError("Ошибка аутентификации OpenAI: проверьте OPENAI_API_KEY") from exc
+        except RateLimitError as exc:
+            raise AIClientError("Превышен лимит OpenAI API (Rate Limit)") from exc
+        except BadRequestError as exc:
+            raise AIClientError(f"Некорректный запрос к OpenAI API: {exc}") from exc
+        except APIConnectionError as exc:
+            raise AIClientError("Ошибка сетевого соединения с OpenAI API") from exc
+        except APIStatusError as exc:
+            raise AIClientError(f"OpenAI API вернул статус {exc.status_code}") from exc
+        except Exception as exc:
+            raise AIClientError("Непредвиденная ошибка при обращении к OpenAI API") from exc
 
-        content = response.choices[0].message.content or ""
-        recommendations = [line.strip("- ").strip() for line in content.splitlines() if line.strip()]
+        content = response.choices[0].message.content if response.choices else None
+        insight = (content or "").strip()
+        if not insight:
+            raise AIClientError("OpenAI вернул пустой ответ")
 
-        return {
-            "summary": recommendations[0] if recommendations else "Отчет сформирован.",
-            "recommendations": recommendations[1:4] if len(recommendations) > 1 else [],
-            "raw_text": content,
-        }
+        return insight

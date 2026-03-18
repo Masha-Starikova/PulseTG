@@ -14,7 +14,8 @@
 6. [План разработки](#план-разработки)
 7. [Локальный запуск через Docker](#локальный-запуск-через-docker)
 8. [Деплой на VPS](#деплой-на-vps)
-9. [Roadmap / дальнейшие улучшения](#roadmap--дальнейшие-улучшения)
+9. [Как создать Telegram session файл](#как-создать-telegram-session-файл)
+10. [Roadmap / дальнейшие улучшения](#roadmap--дальнейшие-улучшения)
 
 ---
 
@@ -332,6 +333,50 @@ docker compose -f infra/docker/docker-compose.yml exec api alembic upgrade head
 
 - push в `main` -> build образов -> deploy через SSH -> `docker compose pull && up -d`;
 - отдельно выполнять миграции и smoke-check после релиза.
+
+---
+
+## Как создать Telegram session файл
+
+Runtime-сервисы (`api`, `worker`) не должны логиниться в Telegram интерактивно.
+Для этого session-файл создается заранее локально и затем передается в окружение запуска.
+
+### 1) Временный скрипт
+
+Используйте `scripts/init_session.py`.
+Скрипт:
+
+- читает `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_NAME` из `.env`;
+- запускает одноразовую интерактивную авторизацию локально;
+- создает файл `app/telegram/<TELEGRAM_SESSION_NAME>.session`.
+
+### 2) Локальный запуск скрипта
+
+```bash
+python scripts/init_session.py
+```
+
+После успешного выполнения должен появиться файл:
+
+```text
+app/telegram/pulsetg.session
+```
+
+### 3) Перенос session файла
+
+В production скопируйте этот файл на сервер в ту же директорию проекта:
+
+```text
+app/telegram/<TELEGRAM_SESSION_NAME>.session
+```
+
+В `docker-compose.yml` уже добавлен volume:
+
+```yaml
+- ./app/telegram:/app/app/telegram
+```
+
+Это позволяет контейнерам `api` и `worker` использовать существующую session без интерактивного входа.
 
 ---
 

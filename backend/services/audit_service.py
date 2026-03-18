@@ -3,18 +3,16 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.ai.client import AIInsightsService
-from backend.analytics.engine import AnalyticsEngine
+from backend.ai.service import AIInsightsService
+from backend.analytics.analytics_engine import calculate_metrics
 from backend.models.audit import AuditRequest, AuditStatus
-from backend.telegram.client import TelegramCollector
+from backend.telegram.telegram_collector import get_channel_posts
 
 
 class AuditService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self.collector = TelegramCollector()
-        self.analytics = AnalyticsEngine()
-        self.ai = AIInsightsService()
+        self.ai_service = AIInsightsService()
 
     async def create_audit_request(self, channel_username: str) -> AuditRequest:
         normalized_channel = channel_username.strip().lstrip("@")
@@ -47,13 +45,15 @@ class AuditService:
             audit.status = AuditStatus.running
             await self.session.commit()
 
-            raw_data = await self.collector.fetch_channel_data(audit.channel_username, days=30)
-            metrics = self.analytics.build_metrics(raw_data)
-            ai_report = await self.ai.generate_recommendations(metrics)
+            posts = await get_channel_posts(audit.channel_username, days=30)
+            metrics = calculate_metrics(posts)
+            ai_report = await self.ai_service.generate_audit(metrics)
 
             audit.status = AuditStatus.completed
             audit.report = {
-                "raw": raw_data,
+                "channel": audit.channel_username,
+                "period_days": 30,
+                "posts": posts,
                 "metrics": metrics,
                 "ai": ai_report,
             }
