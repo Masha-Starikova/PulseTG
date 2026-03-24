@@ -12,6 +12,47 @@ from openai import (
 
 from backend.core.config import settings
 
+SYSTEM_PROMPT = (
+    "Ты эксперт по аналитике Telegram-каналов с опытом работы с тысячами каналов разных ниш. "
+    "Твоя задача — давать конкретный, actionable аудит на основе реальных данных. "
+    "Всегда указывай числа из входных данных. Не пиши общих фраз без привязки к метрикам. "
+    "Отвечай деловым стилем на русском языке, без воды и клише."
+)
+
+USER_PROMPT_TEMPLATE = """\
+Проведи аудит Telegram-канала @{channel_username} за последние {period_days} дней.
+
+## ВХОДНЫЕ ДАННЫЕ:
+{metrics_json}
+
+## СТРУКТУРА ОТВЕТА (строго соблюдай):
+
+### Общая оценка
+Одно предложение: оценка канала от 1 до 10 и её обоснование на основе цифр (ER, просмотры, динамика).
+
+### Сильные стороны
+- 2-3 конкретных сильных стороны С ЧИСЛАМИ из данных выше.
+
+### Проблемные зоны
+- 2-3 конкретных проблемы С ЧИСЛАМИ. Укажи, как это влияет на рост канала.
+
+### Рекомендации
+1. [Конкретное действие] — [ожидаемый результат, основанный на паттерне лучших постов]
+2. [Конкретное действие] — [ожидаемый результат]
+3. [Конкретное действие] — [ожидаемый результат]
+4. [Конкретное действие] — [ожидаемый результат]
+5. [Конкретное действие] — [ожидаемый результат]
+
+### Лучший пост периода
+Кратко опиши что сработало лучше всего и почему (на основе best_posts из данных).
+
+### Оптимальное время
+На основе posting_time из данных: в какие дни и часы лучше публиковать (с числами avg_er).
+
+### Прогноз
+Если trends.direction = "growing"/"declining"/"stable" — что произойдёт с каналом через месяц при текущей динамике?
+"""
+
 
 class AIClientError(RuntimeError):
     """Ошибки при работе с OpenAI API."""
@@ -36,23 +77,26 @@ class AIClient:
             timeout=timeout_seconds or settings.openai_timeout_seconds,
         )
 
-    async def generate_insight(self, structured_data: dict[str, Any]) -> str:
+    async def generate_insight(
+        self,
+        structured_data: dict[str, Any],
+        channel_username: str = "",
+        period_days: int = 30,
+    ) -> str:
         """Генерирует текстовый инсайт по структурированным метрикам."""
 
         payload = json.dumps(structured_data, ensure_ascii=False, indent=2)
-        prompt = (
-            "Ты senior-аналитик Telegram-каналов. "
-            "Сформируй краткий аудит и actionable-рекомендации на русском языке. "
-            "Ответ структурируй так: 1) Краткий вывод, 2) Сильные стороны, "
-            "3) Риски, 4) 3-5 конкретных рекомендаций.\n\n"
-            f"Входные данные:\n{payload}"
+        prompt = USER_PROMPT_TEMPLATE.format(
+            channel_username=channel_username,
+            period_days=period_days,
+            metrics_json=payload,
         )
 
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Отвечай деловым и конкретным стилем."},
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,

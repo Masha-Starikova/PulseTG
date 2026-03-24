@@ -35,18 +35,3 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             yield session
         finally:
             await session.close()
-
-
-async def init_models() -> None:
-    """Создание таблиц для локальной среды.
-
-    В production рекомендуется использовать Alembic-миграции.
-    """
-
-    if not settings.auto_create_tables:
-        return
-
-    from backend import models  # noqa: F401
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

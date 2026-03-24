@@ -1,0 +1,58 @@
+@import 'tailwindcss';
+
+/* ── Кастомная тема PulseTG ── */
+@theme {
+  --color-forest-900: #0b1f0e;
+  --color-forest-800: #132b16;
+  --color-forest-700: #1a3a1e;
+  --color-forest-600: #234d28;
+  --color-forest-500: #2d6232;
+  --color-forest-400: #3d8b44;
+  --color-forest-300: #5ab563;
+  --color-forest-200: #8fd496;
+  --color-forest-100: #c5eac9;
+  --color-forest-50: #eaf6eb;
+
+  --color-gold-900: #4a3f1a;
+  --color-gold-800: #6b5a24;
+  --color-gold-700: #8c762e;
+  --color-gold-600: #a8903a;
+  --color-gold-500: #c4aa4e;
+  --color-gold-400: #d4bf6a;
+  --color-gold-300: #e0d08a;
+  --color-gold-200: #ece1b0;
+  --color-gold-100: #f5f0d5;
+  --color-gold-50: #faf8ed;
+
+  --color-surface: #0d1f10;
+  --color-surface-card: #132b16;
+  --color-surface-elevated: #1a3a1e;
+  --color-text-primary: #eaf6eb;
+  --color-text-secondary: #8fd496;
+  --color-text-muted: #5ab563;
+  --color-border: #234d28;
+}
+
+/* ── Базовые стили ── */
+body {
+  @apply bg-surface text-text-primary antialiased;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  margin: 0;
+}
+
+/* ── Скроллбар ── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-forest-600);
+  border-radius: 2px;
+}
+
+/* ── Плавные переходы для всех интерактивных элементов ── */
+button, a, input {
+  transition: all 0.2s ease;
+}

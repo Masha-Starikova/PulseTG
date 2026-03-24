@@ -23,6 +23,7 @@ class ChannelPost(TypedDict):
     text: str
     views: int
     reactions: int
+    forwards: int
     comments_count: int
 
 
@@ -71,6 +72,7 @@ async def get_channel_posts(channel_username: str, days: int = 30) -> list[Chann
                         "text": message.message or "",
                         "views": int(message.views or 0),
                         "reactions": int(reactions_count),
+                        "forwards": int(message.forwards or 0),
                         "comments_count": comments_count,
                     }
                 )

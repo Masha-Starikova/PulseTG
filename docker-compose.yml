@@ -1,4 +1,35 @@
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pulsetg_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - pulsetg_net
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: pulsetg_migrate
+    command: alembic upgrade head
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pulsetg_net
+    restart: "no"
+
   api:
     build:
       context: .
@@ -13,10 +44,18 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - pulsetg_net
     restart: unless-stopped
 
   worker:
@@ -32,10 +71,12 @@ services:
       - .:/app
       - ./app/telegram:/app/app/telegram
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - pulsetg_net
     restart: unless-stopped
 
   postgres:
@@ -45,8 +86,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -54,13 +93,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pulsetg_net
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: pulsetg_redis
-    ports:
-      - "6379:6379"
+    command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis_data:/data
     healthcheck:
@@ -68,8 +108,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pulsetg_net
     restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  pulsetg_net:
+    driver: bridge

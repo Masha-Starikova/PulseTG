@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     debug: bool = False
-    auto_create_tables: bool = True
 
     database_url: str = Field(
         default="postgresql+asyncpg://pulsetg:pulsetg@db:5432/pulsetg",

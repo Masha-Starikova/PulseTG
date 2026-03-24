@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from backend.api import router as api_router
 from backend.core.config import settings
-from backend.core.database import init_models
 from backend.core.logging import setup_logging
+from backend.core.rate_limit import limiter
 from backend.core.redis import close_redis, init_redis
 
 
@@ -13,8 +15,6 @@ from backend.core.redis import close_redis, init_redis
 async def lifespan(app: FastAPI):
     setup_logging(settings.debug)
 
-    # В local-среде можно автоматически создать таблицы.
-    await init_models()
     await init_redis()
 
     yield
@@ -28,6 +28,9 @@ app = FastAPI(
     debug=settings.debug,
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(api_router)
 

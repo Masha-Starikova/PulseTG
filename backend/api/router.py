@@ -1,11 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import backend.core.redis as redis_state
 from backend.core.database import get_db_session
+from backend.core.rate_limit import limiter
 from backend.schemas import AuditCreateRequest, AuditResponse, HealthResponse
 from backend.services.audit_service import AuditService
 from backend.services.tasks import run_channel_audit
@@ -36,7 +37,9 @@ async def healthcheck(session: AsyncSession = Depends(get_db_session)) -> Health
 
 
 @router.post("/audits", response_model=AuditResponse, status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("5/minute")
 async def create_audit(
+    request: Request,
     payload: AuditCreateRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuditResponse:
@@ -49,7 +52,9 @@ async def create_audit(
 
 
 @router.get("/audits/{audit_id}", response_model=AuditResponse)
+@limiter.limit("30/minute")
 async def get_audit(
+    request: Request,
     audit_id: UUID,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuditResponse:

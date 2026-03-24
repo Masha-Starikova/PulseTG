@@ -45,14 +45,19 @@ class AuditService:
             audit.status = AuditStatus.running
             await self.session.commit()
 
-            posts = await get_channel_posts(audit.channel_username, days=30)
+            period_days = 30
+            posts = await get_channel_posts(audit.channel_username, days=period_days)
             metrics = calculate_metrics(posts)
-            ai_report = await self.ai_service.generate_audit(metrics)
+            ai_report = await self.ai_service.generate_audit(
+                metrics,
+                channel_username=audit.channel_username,
+                period_days=period_days,
+            )
 
             audit.status = AuditStatus.completed
             audit.report = {
                 "channel": audit.channel_username,
-                "period_days": 30,
+                "period_days": period_days,
                 "posts": posts,
                 "metrics": metrics,
                 "ai": ai_report,
