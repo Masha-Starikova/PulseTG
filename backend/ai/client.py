@@ -58,8 +58,18 @@ USER_PROMPT_TEMPLATE = """\
 """
 
 
+CORRECTION_TEMPLATE = (
+    "Твой предыдущий ответ отклонён: {problem}. "
+    "Верни отчёт целиком заново, строго по заданной структуре, со всеми заголовками ###."
+)
+
+
 class AIClientError(AuditError):
     """Ошибки при работе с OpenAI API."""
+
+
+class AIResponseFormatError(AIClientError):
+    """Модель ответила, но ответ пустой или не соответствует структуре отчёта."""
 
 
 class AIClient:
@@ -86,8 +96,12 @@ class AIClient:
         structured_data: dict[str, Any],
         channel_username: str = "",
         period_days: int = 30,
+        correction: str | None = None,
     ) -> str:
-        """Генерирует текстовый инсайт по структурированным метрикам."""
+        """Генерирует текстовый инсайт по структурированным метрикам.
+
+        correction: описание ошибки структуры в прошлом ответе, просьба исправить её.
+        """
 
         payload = json.dumps(structured_data, ensure_ascii=False, indent=2)
         prompt = USER_PROMPT_TEMPLATE.format(
@@ -96,13 +110,19 @@ class AIClient:
             metrics_json=payload,
         )
 
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        if correction:
+            messages.append(
+                {"role": "user", "content": CORRECTION_TEMPLATE.format(problem=correction)}
+            )
+
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 temperature=0.2,
             )
         except AuthenticationError as exc:
@@ -131,6 +151,6 @@ class AIClient:
         content = response.choices[0].message.content if response.choices else None
         insight = (content or "").strip()
         if not insight:
-            raise AIClientError("OpenAI вернул пустой ответ")
+            raise AIResponseFormatError("OpenAI вернул пустой ответ")
 
         return insight

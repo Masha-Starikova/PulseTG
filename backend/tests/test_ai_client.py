@@ -43,13 +43,23 @@ async def test_returns_stripped_model_answer(ai_client: AIClient) -> None:
     assert await ai_client.generate_insight({"a": 1}) == "текст отчёта"
 
 
+async def test_correction_is_sent_as_extra_message(ai_client: AIClient) -> None:
+    mocked_create(ai_client).return_value = completion("ok")
+
+    await ai_client.generate_insight({}, correction="Нет секции: Прогноз")
+
+    messages = mocked_create(ai_client).await_args.kwargs["messages"]
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert "Нет секции: Прогноз" in messages[-1]["content"]
+
+
 async def test_sends_metrics_channel_and_period_to_model(ai_client: AIClient) -> None:
     mocked_create(ai_client).return_value = completion("ok")
 
     await ai_client.generate_insight({"avg_er": 4.25}, channel_username="durov", period_days=14)
 
     kwargs = mocked_create(ai_client).await_args.kwargs
-    prompt = kwargs["messages"][-1]["content"]
+    prompt = kwargs["messages"][1]["content"]
     assert kwargs["model"] == "test-model"
     assert "@durov" in prompt
     assert "14 дней" in prompt
