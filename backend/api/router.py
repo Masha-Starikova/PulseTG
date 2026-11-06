@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -10,6 +11,10 @@ from backend.core.rate_limit import limiter
 from backend.schemas import AuditCreateRequest, AuditResponse, HealthResponse
 from backend.services.audit_service import AuditService
 from backend.services.tasks import run_channel_audit
+
+logger = logging.getLogger(__name__)
+
+QUEUE_UNAVAILABLE_MESSAGE = "Сервис аудита временно недоступен, повторите попытку позже"
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -47,7 +52,17 @@ async def create_audit(
     audit = await service.create_audit_request(payload.channel_username)
 
     # Запускаем асинхронную задачу обработки в Celery-воркере.
-    run_channel_audit.delay(str(audit.id))
+    try:
+        run_channel_audit.delay(str(audit.id))
+    except Exception as exc:
+        # Без этого запись навсегда осталась бы в pending: задачу никто не выполнит.
+        logger.exception("Не удалось поставить аудит %s в очередь", audit.id)
+        await service.mark_failed(str(audit.id), QUEUE_UNAVAILABLE_MESSAGE)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=QUEUE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
     return AuditResponse.model_validate(audit)
 
 

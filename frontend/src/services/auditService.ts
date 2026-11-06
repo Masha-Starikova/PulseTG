@@ -18,6 +18,15 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null;
 }
 
+/* FastAPI отдаёт detail строкой, а ошибки валидации (422) списком объектов */
+function errorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && isRecord(detail[0]) && typeof detail[0].msg === 'string') {
+    return detail[0].msg.replace(/^Value error, /, '');
+  }
+  return fallback;
+}
+
 function toNumber(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -239,7 +248,7 @@ export async function createAudit(channelUsername: string): Promise<AuditRespons
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.detail ?? 'Не удалось создать аудит');
+    throw new ApiError(res.status, errorMessage(body.detail, 'Не удалось создать аудит'));
   }
 
   const data = normalizeAuditResponse(await res.json());
@@ -253,7 +262,7 @@ export async function getAudit(auditId: string): Promise<AuditResponse> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.detail ?? 'Аудит не найден');
+    throw new ApiError(res.status, errorMessage(body.detail, 'Аудит не найден'));
   }
 
   const data = normalizeAuditResponse(await res.json());

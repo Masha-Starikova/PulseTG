@@ -1,8 +1,14 @@
-import re
+import logging
 from typing import Any
 
-from backend.ai.client import AIClient, AIClientError
+from backend.ai.client import AIClient, AIClientError, AIResponseFormatError
+from backend.ai.report import parse_report
 from backend.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Первая попытка и один повтор с указанием, что исправить.
+MAX_FORMAT_ATTEMPTS = 2
 
 
 class AIInsightsService:
@@ -21,96 +27,30 @@ class AIInsightsService:
         channel_username: str = "",
         period_days: int = 30,
     ) -> dict[str, Any]:
-        """Возвращает структурированный AI-аудит по переданным метрикам."""
+        """Возвращает AI-аудит, проверенный по обязательной структуре.
+
+        Сбой AI не маскируется заглушкой: AIClientError уходит наверх,
+        иначе неудачный аудит выглядел бы для пользователя как успешный.
+        """
 
         if self.client is None:
-            return {
-                "status": "fallback",
-                "summary": "AI-аудит недоступен: OPENAI_API_KEY не задан.",
-                "recommendations": [
-                    "Проверьте настройку OPENAI_API_KEY в .env.",
-                    "Проведите первичную валидацию метрик вручную.",
-                    "Повторите запуск аудита после настройки AI-провайдера.",
-                ],
-                "raw_text": "",
-            }
+            raise AIClientError("AI-анализ недоступен: OPENAI_API_KEY не задан")
 
-        try:
-            insight = await self.client.generate_insight(
-                metrics,
-                channel_username=channel_username,
-                period_days=period_days,
-            )
-        except AIClientError as exc:
-            return {
-                "status": "fallback",
-                "summary": "AI-аудит завершился с ошибкой внешнего провайдера.",
-                "recommendations": [
-                    "Повторите попытку позже.",
-                    "Проверьте лимиты и доступность OpenAI API.",
-                    "Проверьте корректность входных метрик.",
-                ],
-                "error": str(exc),
-                "raw_text": "",
-            }
+        correction: str | None = None
+        for attempt in range(1, MAX_FORMAT_ATTEMPTS + 1):
+            try:
+                insight = await self.client.generate_insight(
+                    metrics,
+                    channel_username=channel_username,
+                    period_days=period_days,
+                    correction=correction,
+                )
+                report = parse_report(insight)
+            except AIResponseFormatError as exc:
+                logger.warning("AI-отчёт отклонён, попытка %s: %s", attempt, exc)
+                correction = str(exc)
+                continue
 
-        sections = _parse_sections(insight)
-        recommendations = _extract_recommendations(insight)
+            return {"status": "ok", **report.model_dump(), "raw_text": insight}
 
-        return {
-            "status": "ok",
-            "summary": sections.get("общая оценка", "AI-аудит сформирован."),
-            "strengths": sections.get("сильные стороны", ""),
-            "problems": sections.get("проблемные зоны", ""),
-            "recommendations": recommendations,
-            "best_post_insight": sections.get("лучший пост периода", ""),
-            "optimal_time": sections.get("оптимальное время", ""),
-            "forecast": sections.get("прогноз", ""),
-            "raw_text": insight,
-        }
-
-
-def _parse_sections(text: str) -> dict[str, str]:
-    """Разбивает markdown-текст по заголовкам ### на секции."""
-    sections: dict[str, str] = {}
-    current_key: str | None = None
-    current_lines: list[str] = []
-
-    for line in text.splitlines():
-        heading_match = re.match(r"^#{1,3}\s+(.+)", line)
-        if heading_match:
-            if current_key is not None:
-                sections[current_key] = "\n".join(current_lines).strip()
-            current_key = heading_match.group(1).strip().lower()
-            current_lines = []
-        elif current_key is not None:
-            current_lines.append(line)
-
-    if current_key is not None:
-        sections[current_key] = "\n".join(current_lines).strip()
-
-    return sections
-
-
-def _extract_recommendations(text: str, limit: int = 5) -> list[str]:
-    """Извлекает пункты рекомендаций из секции 'Рекомендации'."""
-    sections = _parse_sections(text)
-    rec_text = sections.get("рекомендации", "")
-
-    if not rec_text:
-        # Fallback: ищем по всему тексту.
-        rec_text = text
-
-    candidates: list[str] = []
-    for line in rec_text.splitlines():
-        item = line.strip().lstrip("-• ").strip()
-        if not item:
-            continue
-
-        # Убираем нумерацию вида "1. ", "2) ", "10. ".
-        item = re.sub(r"^\d+[.)]\s*", "", item).strip()
-
-        if item and len(item) > 10:
-            candidates.append(item)
-
-    return candidates[:limit]
+        raise AIClientError("AI вернул отчёт не по заданной структуре. Повторите аудит позже.")

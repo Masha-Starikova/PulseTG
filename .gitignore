@@ -64,6 +64,7 @@ redis_data/
 *.tar.gz
 
 # IDE / Editor
+.claude/
 .idea/
 .vscode/
 *.swp
