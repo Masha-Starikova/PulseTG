@@ -1,6 +1,8 @@
 [run]
 source = backend
 branch = True
+# SQLAlchemy async работает через greenlet: без этого строки после await не считаются.
+concurrency = greenlet,thread
 omit =
     backend/tests/*
 

@@ -7,10 +7,12 @@ import httpx
 import pytest
 from kombu.exceptions import OperationalError
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import backend.core.redis as redis_state
+from backend.core.config import settings
 from backend.core.database import get_db_session
 from backend.main import app
 from backend.models import AuditRequest, AuditStatus
@@ -257,3 +259,18 @@ async def test_root_reports_service_is_running(client: httpx.AsyncClient) -> Non
 
     assert response.status_code == 200
     assert response.json()["status"] == "running"
+
+
+class TestLifespan:
+    async def test_connects_to_redis_on_startup_and_closes_on_shutdown(self) -> None:
+        async with app.router.lifespan_context(app):
+            assert await redis_state.redis_client.ping() is True
+
+        assert redis_state.redis_client is None
+
+    async def test_startup_fails_when_redis_is_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
+
+        with pytest.raises(RedisConnectionError):
+            async with app.router.lifespan_context(app):
+                pass

@@ -2,8 +2,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from backend.ai.client import AIClientError, AIResponseFormatError
+from backend.ai.client import AIClient, AIClientError, AIResponseFormatError
 from backend.ai.service import AIInsightsService
+from backend.core.config import settings
 from backend.tests.factories import VALID_REPORT_TEXT
 
 
@@ -16,6 +17,12 @@ def service_with_answers(*answers: str | Exception) -> tuple[AIInsightsService, 
 async def test_missing_api_key_is_an_error_not_a_report() -> None:
     with pytest.raises(AIClientError, match="OPENAI_API_KEY"):
         await AIInsightsService().generate_audit({})
+
+
+def test_client_is_created_when_key_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+
+    assert isinstance(AIInsightsService().client, AIClient)
 
 
 async def test_provider_error_is_passed_to_caller() -> None:
