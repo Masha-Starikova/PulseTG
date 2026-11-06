@@ -80,6 +80,66 @@ class TestCreateAudit:
         assert [audit.status for audit in audits] == [AuditStatus.failed]
         assert audits[0].error_message == response.json()["detail"]
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("durov_news", "durov_news"),
+            ("@durov_news", "durov_news"),
+            ("  @durov_news  ", "durov_news"),
+            ("t.me/durov_news", "durov_news"),
+            ("https://t.me/durov_news", "durov_news"),
+            ("http://t.me/durov_news/", "durov_news"),
+            ("https://www.t.me/durov_news?utm_source=x", "durov_news"),
+            ("telegram.me/durov_news", "durov_news"),
+            ("T.ME/Durov_News", "Durov_News"),
+        ],
+    )
+    async def test_accepts_username_forms_and_stores_bare_name(
+        self,
+        client: httpx.AsyncClient,
+        queue: MagicMock,
+        raw: str,
+        expected: str,
+    ) -> None:
+        response = await client.post("/api/v1/audits", json={"channel_username": raw})
+
+        assert response.status_code == 202
+        assert response.json()["channel_username"] == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "abcd",
+            "a" * 33,
+            "1channel",
+            "_channel",
+            "channel_",
+            "chan__nel",
+            "канал_имя",
+            "chan nel",
+            "chan-nel",
+            "@@channel",
+            "'; DROP TABLE audit_requests; --",
+            "https://t.me/+AbCdEfGhIjK",
+            "https://t.me/joinchat/AbCdEfGh",
+            "https://t.me/c/1234567/10",
+            "https://t.me/durov_news/15",
+            "https://evil.example/durov_news",
+            "https://t.me.evil.example/durov_news",
+        ],
+    )
+    async def test_rejects_invalid_telegram_names(
+        self,
+        client: httpx.AsyncClient,
+        queue: MagicMock,
+        raw: str,
+    ) -> None:
+        response = await client.post("/api/v1/audits", json={"channel_username": raw})
+
+        assert response.status_code == 422
+        assert "Telegram" in response.json()["detail"][0]["msg"]
+        queue.delay.assert_not_called()
+
 
 class TestGetAudit:
     async def test_returns_saved_audit(self, client: httpx.AsyncClient, db_session: AsyncSession) -> None:
