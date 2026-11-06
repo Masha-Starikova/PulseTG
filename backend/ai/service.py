@@ -21,38 +21,20 @@ class AIInsightsService:
         channel_username: str = "",
         period_days: int = 30,
     ) -> dict[str, Any]:
-        """Возвращает структурированный AI-аудит по переданным метрикам."""
+        """Возвращает структурированный AI-аудит по переданным метрикам.
+
+        Сбой AI не маскируется заглушкой: AIClientError уходит наверх,
+        иначе неудачный аудит выглядел бы для пользователя как успешный.
+        """
 
         if self.client is None:
-            return {
-                "status": "fallback",
-                "summary": "AI-аудит недоступен: OPENAI_API_KEY не задан.",
-                "recommendations": [
-                    "Проверьте настройку OPENAI_API_KEY в .env.",
-                    "Проведите первичную валидацию метрик вручную.",
-                    "Повторите запуск аудита после настройки AI-провайдера.",
-                ],
-                "raw_text": "",
-            }
+            raise AIClientError("AI-анализ недоступен: OPENAI_API_KEY не задан")
 
-        try:
-            insight = await self.client.generate_insight(
-                metrics,
-                channel_username=channel_username,
-                period_days=period_days,
-            )
-        except AIClientError as exc:
-            return {
-                "status": "fallback",
-                "summary": "AI-аудит завершился с ошибкой внешнего провайдера.",
-                "recommendations": [
-                    "Повторите попытку позже.",
-                    "Проверьте лимиты и доступность OpenAI API.",
-                    "Проверьте корректность входных метрик.",
-                ],
-                "error": str(exc),
-                "raw_text": "",
-            }
+        insight = await self.client.generate_insight(
+            metrics,
+            channel_username=channel_username,
+            period_days=period_days,
+        )
 
         sections = _parse_sections(insight)
         recommendations = _extract_recommendations(insight)

@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 from openai import (
@@ -11,6 +12,8 @@ from openai import (
 )
 
 from backend.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "Ты эксперт по аналитике Telegram-каналов с опытом работы с тысячами каналов разных ниш. "
@@ -106,7 +109,9 @@ class AIClient:
         except RateLimitError as exc:
             raise AIClientError("Превышен лимит OpenAI API (Rate Limit)") from exc
         except BadRequestError as exc:
-            raise AIClientError(f"Некорректный запрос к OpenAI API: {exc}") from exc
+            # Детали провайдера остаются в логах: error_message видит пользователь.
+            logger.warning("OpenAI отклонил запрос: %s", exc)
+            raise AIClientError("Некорректный запрос к OpenAI API") from exc
         except APIConnectionError as exc:
             raise AIClientError("Ошибка сетевого соединения с OpenAI API") from exc
         except APIStatusError as exc:

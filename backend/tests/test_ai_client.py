@@ -82,6 +82,18 @@ async def test_provider_errors_become_ai_client_error(
     assert exc_info.value.__cause__ is error
 
 
+async def test_provider_details_do_not_reach_error_message(ai_client: AIClient) -> None:
+    response = httpx.Response(400, request=REQUEST)
+    mocked_create(ai_client).side_effect = openai.BadRequestError(
+        "internal prompt dump", response=response, body=None
+    )
+
+    with pytest.raises(AIClientError) as exc_info:
+        await ai_client.generate_insight({})
+
+    assert "internal prompt dump" not in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     "response",
     [completion(""), completion("   \n"), completion(None), SimpleNamespace(choices=[])],
