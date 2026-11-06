@@ -82,6 +82,44 @@ async def test_provider_errors_become_ai_client_error(
     assert exc_info.value.__cause__ is error
 
 
+@pytest.mark.parametrize(
+    ("error", "retryable"),
+    [
+        (status_error(openai.AuthenticationError, 401), False),
+        (status_error(openai.BadRequestError, 400), False),
+        (status_error(openai.NotFoundError, 404), False),
+        (status_error(openai.RateLimitError, 429), True),
+        (status_error(openai.InternalServerError, 503), True),
+        (openai.APIConnectionError(request=REQUEST), True),
+        (openai.APITimeoutError(request=REQUEST), True),
+        (RuntimeError("неожиданный сбой"), False),
+    ],
+    ids=["auth", "bad-request", "not-found", "rate-limit", "server", "connection", "timeout", "unexpected"],
+)
+async def test_only_temporary_errors_are_retryable(
+    ai_client: AIClient,
+    error: Exception,
+    retryable: bool,
+) -> None:
+    mocked_create(ai_client).side_effect = error
+
+    with pytest.raises(AIClientError) as exc_info:
+        await ai_client.generate_insight({})
+
+    assert exc_info.value.retryable is retryable
+
+
+async def test_exhausted_quota_is_not_retried(ai_client: AIClient) -> None:
+    error = status_error(openai.RateLimitError, 429)
+    error.code = "insufficient_quota"
+    mocked_create(ai_client).side_effect = error
+
+    with pytest.raises(AIClientError) as exc_info:
+        await ai_client.generate_insight({})
+
+    assert exc_info.value.retryable is False
+
+
 async def test_provider_details_do_not_reach_error_message(ai_client: AIClient) -> None:
     response = httpx.Response(400, request=REQUEST)
     mocked_create(ai_client).side_effect = openai.BadRequestError(

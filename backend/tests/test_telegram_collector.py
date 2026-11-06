@@ -5,8 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from telethon.errors import (
+    BadRequestError,
     ChannelPrivateError,
     FloodWaitError,
+    ServerError,
+    TimedOutError,
     UsernameInvalidError,
     UsernameNotOccupiedError,
 )
@@ -130,8 +133,22 @@ async def test_unknown_channel_gives_clear_message(connect: AsyncMock, error: Ex
     client.get_entity.side_effect = error
     connect.return_value = client
 
-    with pytest.raises(TelegramCollectorError, match="Канал не найден"):
+    with pytest.raises(TelegramCollectorError, match="Канал не найден") as exc_info:
         await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is False
+
+
+async def test_nonexistent_channel_as_reported_by_telethon(connect: AsyncMock) -> None:
+    """get_entity превращает UsernameNotOccupiedError в ValueError, это его настоящее поведение."""
+    client = make_client()
+    client.get_entity.side_effect = ValueError('No user has "channel" as username')
+    connect.return_value = client
+
+    with pytest.raises(TelegramCollectorError, match="Канал не найден") as exc_info:
+        await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is False
 
 
 async def test_private_channel_gives_clear_message(connect: AsyncMock) -> None:
@@ -139,21 +156,65 @@ async def test_private_channel_gives_clear_message(connect: AsyncMock) -> None:
     client.get_entity.side_effect = ChannelPrivateError(request=None)
     connect.return_value = client
 
-    with pytest.raises(TelegramCollectorError, match="приватный"):
+    with pytest.raises(TelegramCollectorError, match="приватный") as exc_info:
         await get_channel_posts("channel")
 
+    assert exc_info.value.retryable is False
 
-async def test_flood_wait_reports_seconds(connect: AsyncMock) -> None:
+
+async def test_flood_wait_is_temporary_and_reports_seconds(connect: AsyncMock) -> None:
     client = make_client()
     client.get_entity.side_effect = FloodWaitError(request=None, capture=120)
     connect.return_value = client
 
-    with pytest.raises(TelegramCollectorError, match="120 сек"):
+    with pytest.raises(TelegramCollectorError, match="120 сек") as exc_info:
         await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is True
+    assert exc_info.value.retry_after == 120
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ServerError(request=None, message="INTERNAL"),
+        TimedOutError(request=None, message="Timeout"),
+        ConnectionError("Connection to Telegram failed"),
+        TimeoutError(),
+    ],
+    ids=["server-error", "rpc-timeout", "connection", "timeout"],
+)
+async def test_network_and_server_errors_are_temporary(connect: AsyncMock, error: Exception) -> None:
+    client = make_client()
+    client.get_entity.side_effect = error
+    connect.return_value = client
+
+    with pytest.raises(TelegramCollectorError) as exc_info:
+        await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [BadRequestError(request=None, message="SOMETHING_ELSE"), KeyError("bug")],
+    ids=["other-rpc", "unexpected"],
+)
+async def test_other_errors_are_permanent(connect: AsyncMock, error: Exception) -> None:
+    client = make_client()
+    client.get_entity.side_effect = error
+    connect.return_value = client
+
+    with pytest.raises(TelegramCollectorError) as exc_info:
+        await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is False
 
 
 async def test_session_problem_is_reported(connect: AsyncMock) -> None:
     connect.side_effect = TelegramSessionError("Session-файл не найден")
 
-    with pytest.raises(TelegramCollectorError, match="Session-файл"):
+    with pytest.raises(TelegramCollectorError, match="Session-файл") as exc_info:
         await get_channel_posts("channel")
+
+    assert exc_info.value.retryable is False

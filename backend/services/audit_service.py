@@ -8,6 +8,8 @@ from backend.analytics.analytics_engine import calculate_metrics
 from backend.models.audit import AuditRequest, AuditStatus
 from backend.telegram.telegram_collector import get_channel_posts
 
+ERROR_MESSAGE_MAX_LENGTH = AuditRequest.error_message.type.length
+
 
 class AuditService:
     def __init__(self, session: AsyncSession) -> None:
@@ -37,38 +39,41 @@ class AuditService:
         return result.scalar_one_or_none()
 
     async def run_audit(self, audit_id: str) -> AuditRequest:
+        """Выполняет аудит. Ошибки уходят наверх: что с ними делать, решает задача Celery."""
         audit = await self.get_audit_request(audit_id)
         if audit is None:
             raise ValueError("Audit request not found")
 
-        try:
-            audit.status = AuditStatus.running
-            await self.session.commit()
+        audit.status = AuditStatus.running
+        await self.session.commit()
 
-            period_days = 30
-            posts = await get_channel_posts(audit.channel_username, days=period_days)
-            metrics = calculate_metrics(posts)
-            ai_report = await self.ai_service.generate_audit(
-                metrics,
-                channel_username=audit.channel_username,
-                period_days=period_days,
-            )
+        period_days = 30
+        posts = await get_channel_posts(audit.channel_username, days=period_days)
+        metrics = calculate_metrics(posts)
+        ai_report = await self.ai_service.generate_audit(
+            metrics,
+            channel_username=audit.channel_username,
+            period_days=period_days,
+        )
 
-            audit.status = AuditStatus.completed
-            audit.report = {
-                "channel": audit.channel_username,
-                "period_days": period_days,
-                "posts": posts,
-                "metrics": metrics,
-                "ai": ai_report,
-            }
-            audit.error_message = None
-            await self.session.commit()
-            await self.session.refresh(audit)
-            return audit
-        except Exception as exc:
-            audit.status = AuditStatus.failed
-            audit.error_message = str(exc)
-            await self.session.commit()
-            await self.session.refresh(audit)
-            return audit
+        audit.status = AuditStatus.completed
+        audit.report = {
+            "channel": audit.channel_username,
+            "period_days": period_days,
+            "posts": posts,
+            "metrics": metrics,
+            "ai": ai_report,
+        }
+        audit.error_message = None
+        await self.session.commit()
+        await self.session.refresh(audit)
+        return audit
+
+    async def mark_failed(self, audit_id: str, message: str) -> None:
+        audit = await self.get_audit_request(audit_id)
+        if audit is None:
+            return
+
+        audit.status = AuditStatus.failed
+        audit.error_message = message[:ERROR_MESSAGE_MAX_LENGTH]
+        await self.session.commit()

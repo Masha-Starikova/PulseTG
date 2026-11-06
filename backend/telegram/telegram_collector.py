@@ -6,12 +6,16 @@ from typing import TypedDict
 
 from telethon.errors import (
     ChannelPrivateError,
+    FloodError,
     FloodWaitError,
     RPCError,
+    ServerError,
+    TimedOutError,
     UsernameInvalidError,
     UsernameNotOccupiedError,
 )
 
+from backend.core.errors import AuditError
 from backend.telegram.session_manager import TelegramSessionError, get_telegram_client
 
 logger = logging.getLogger(__name__)
@@ -27,7 +31,10 @@ class ChannelPost(TypedDict):
     comments_count: int
 
 
-class TelegramCollectorError(RuntimeError):
+CHANNEL_NOT_FOUND_MESSAGE = "Канал не найден или указан некорректный username"
+
+
+class TelegramCollectorError(AuditError):
     """Базовая ошибка модуля Telegram collector."""
 
 
@@ -47,7 +54,11 @@ async def get_channel_posts(channel_username: str, days: int = 30) -> list[Chann
     try:
         client = await get_telegram_client()
         try:
-            entity = await client.get_entity(normalized_username)
+            try:
+                entity = await client.get_entity(normalized_username)
+            except ValueError as exc:
+                # Telethon сам превращает UsernameNotOccupiedError в ValueError.
+                raise TelegramCollectorError(CHANNEL_NOT_FOUND_MESSAGE) from exc
 
             # iter_messages возвращает сообщения от новых к старым,
             # поэтому завершаем обход, когда дошли до даты отсечения.
@@ -79,16 +90,30 @@ async def get_channel_posts(channel_username: str, days: int = 30) -> list[Chann
         finally:
             if client.is_connected():
                 await client.disconnect()
+    except TelegramCollectorError:
+        raise
     except TelegramSessionError as exc:
         raise TelegramCollectorError(str(exc)) from exc
     except (UsernameInvalidError, UsernameNotOccupiedError) as exc:
-        raise TelegramCollectorError("Канал не найден или указан некорректный username") from exc
+        raise TelegramCollectorError(CHANNEL_NOT_FOUND_MESSAGE) from exc
     except ChannelPrivateError as exc:
         raise TelegramCollectorError("Канал приватный или недоступен текущей сессии") from exc
     except FloodWaitError as exc:
-        raise TelegramCollectorError(f"Telegram FloodWait: повторите попытку через {exc.seconds} сек.") from exc
+        raise TelegramCollectorError(
+            f"Telegram FloodWait: повторите попытку через {exc.seconds} сек.",
+            retryable=True,
+            retry_after=exc.seconds,
+        ) from exc
+    except (FloodError, ServerError, TimedOutError) as exc:
+        raise TelegramCollectorError(
+            f"Временная ошибка Telegram API: {exc.__class__.__name__}",
+            retryable=True,
+        ) from exc
     except RPCError as exc:
         raise TelegramCollectorError(f"Ошибка Telegram API: {exc.__class__.__name__}") from exc
+    except OSError as exc:
+        # Сюда входят ConnectionError и TimeoutError.
+        raise TelegramCollectorError("Нет соединения с Telegram", retryable=True) from exc
     except Exception as exc:
         logger.exception("Непредвиденная ошибка при сборе постов канала: %s", normalized_username)
         raise TelegramCollectorError("Не удалось получить посты канала") from exc

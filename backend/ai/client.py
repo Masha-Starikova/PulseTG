@@ -12,6 +12,7 @@ from openai import (
 )
 
 from backend.core.config import settings
+from backend.core.errors import AuditError
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ USER_PROMPT_TEMPLATE = """\
 """
 
 
-class AIClientError(RuntimeError):
+class AIClientError(AuditError):
     """Ошибки при работе с OpenAI API."""
 
 
@@ -107,15 +108,23 @@ class AIClient:
         except AuthenticationError as exc:
             raise AIClientError("Ошибка аутентификации OpenAI: проверьте OPENAI_API_KEY") from exc
         except RateLimitError as exc:
-            raise AIClientError("Превышен лимит OpenAI API (Rate Limit)") from exc
+            # Закончившиеся деньги тоже приходят как 429, но повтор тут не поможет.
+            raise AIClientError(
+                "Превышен лимит OpenAI API (Rate Limit)",
+                retryable=exc.code != "insufficient_quota",
+            ) from exc
         except BadRequestError as exc:
             # Детали провайдера остаются в логах: error_message видит пользователь.
             logger.warning("OpenAI отклонил запрос: %s", exc)
             raise AIClientError("Некорректный запрос к OpenAI API") from exc
         except APIConnectionError as exc:
-            raise AIClientError("Ошибка сетевого соединения с OpenAI API") from exc
+            # APITimeoutError наследуется от APIConnectionError, таймауты попадают сюда же.
+            raise AIClientError("Ошибка сетевого соединения с OpenAI API", retryable=True) from exc
         except APIStatusError as exc:
-            raise AIClientError(f"OpenAI API вернул статус {exc.status_code}") from exc
+            raise AIClientError(
+                f"OpenAI API вернул статус {exc.status_code}",
+                retryable=exc.status_code >= 500,
+            ) from exc
         except Exception as exc:
             raise AIClientError("Непредвиденная ошибка при обращении к OpenAI API") from exc
 

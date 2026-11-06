@@ -92,7 +92,7 @@ class TestRunAudit:
         assert stored.report["ai"]["status"] == "ok"
         assert stored.report["posts"] == POSTS
 
-    async def test_ai_failure_is_not_shown_as_success(
+    async def test_failure_propagates_and_keeps_audit_for_retry(
         self,
         db_session: AsyncSession,
         session_factory: async_sessionmaker[AsyncSession],
@@ -101,24 +101,43 @@ class TestRunAudit:
         service = make_service(db_session, AIClientError("Превышен лимит OpenAI API"))
         audit = await service.create_audit_request("channel")
 
-        await service.run_audit(str(audit.id))
+        with pytest.raises(AIClientError, match="лимит"):
+            await service.run_audit(str(audit.id))
 
         stored = await stored_audit(session_factory, audit.id)
-        assert stored.status is AuditStatus.failed
-        assert "лимит" in stored.error_message
+        assert stored.status is AuditStatus.running
         assert stored.report is None
 
-    async def test_missing_ai_key_fails_audit_with_clear_reason(
+    async def test_missing_ai_key_is_reported(
         self,
         db_session: AsyncSession,
-        session_factory: async_sessionmaker[AsyncSession],
         collector: AsyncMock,
     ) -> None:
         service = AuditService(db_session)
         audit = await service.create_audit_request("channel")
 
-        await service.run_audit(str(audit.id))
+        with pytest.raises(AIClientError, match="OPENAI_API_KEY"):
+            await service.run_audit(str(audit.id))
+
+    async def test_unknown_audit_is_an_error(self, db_session: AsyncSession) -> None:
+        with pytest.raises(ValueError, match="not found"):
+            await AuditService(db_session).run_audit(str(uuid4()))
+
+
+class TestMarkFailed:
+    async def test_saves_reason(
+        self,
+        db_session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        service = AuditService(db_session)
+        audit = await service.create_audit_request("channel")
+
+        await service.mark_failed(str(audit.id), "Канал не найден")
 
         stored = await stored_audit(session_factory, audit.id)
         assert stored.status is AuditStatus.failed
-        assert "OPENAI_API_KEY" in stored.error_message
+        assert stored.error_message == "Канал не найден"
+
+    async def test_unknown_audit_is_ignored(self, db_session: AsyncSession) -> None:
+        await AuditService(db_session).mark_failed(str(uuid4()), "ошибка")
