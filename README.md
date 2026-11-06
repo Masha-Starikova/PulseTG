@@ -1,395 +1,127 @@
 # PulseTG
 
-**PulseTG** — сервис AI-аудита Telegram-каналов с аналитикой за 30 дней, рекомендациями по росту и удобной выдачей результатов в формате Telegram Mini App.
+[![tests](https://github.com/Masha-Starikova/PulseTG/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Masha-Starikova/PulseTG/actions/workflows/tests.yml)
 
----
+PulseTG делает AI-аудит публичного Telegram-канала. Сервис собирает посты за 30 дней, считает метрики и формирует отчёт с рекомендациями по заданной структуре.
 
-## Содержание
+## Статус проекта
 
-1. [Описание проекта](#описание-проекта)
-2. [Архитектура](#архитектура)
-3. [Поток данных](#поток-данных)
-4. [Технологический стек](#технологический-стек)
-5. [Структура проекта](#структура-проекта)
-6. [План разработки](#план-разработки)
-7. [Локальный запуск через Docker](#локальный-запуск-через-docker)
-8. [Деплой на VPS](#деплой-на-vps)
-9. [Как создать Telegram session файл](#как-создать-telegram-session-файл)
-10. [Roadmap / дальнейшие улучшения](#roadmap--дальнейшие-улучшения)
+Это пет-проект, запускается локально через Docker Compose. В продакшене не развёрнут, реальной нагрузки не было.
 
----
+Работает:
 
-## Описание проекта
+- REST API на FastAPI с валидацией запросов через Pydantic.
+- Фоновый аудит в Celery с Redis: временные ошибки повторяются, постоянные сразу завершают аудит.
+- Сбор постов через Telethon и расчёт ER, недельных трендов и лучшего времени публикаций.
+- AI-отчёт через OpenAI с проверкой структуры Pydantic-моделью.
+- PostgreSQL на async SQLAlchemy и миграции Alembic.
+- Веб-интерфейс на React.
 
-PulseTG решает задачу быстрой и понятной диагностики Telegram-канала:
+Пока нет:
 
-- собирает данные по постам, реакциям, просмотрам, динамике публикаций и вовлеченности;
-- агрегирует их в единый аналитический профиль;
-- передает метрики в AI-модуль;
-- формирует рекомендации: контент, частота публикаций, точки роста, риски;
-- показывает результат пользователю в Telegram Mini App.
+- Авторизации пользователей: API открыт для всех, кто до него дотянется.
+- Запуска внутри Telegram: на фронте есть заготовка для Mini App, но он работает как обычный сайт.
+- Деплоя и мониторинга.
 
-### Ключевая ценность
+Известные ограничения перечислены в разделе [ниже](#известные-ограничения).
 
-- **Скорость**: аудит за минуты, а не за часы ручного анализа.
-- **Системность**: единый pipeline от сбора данных до инсайтов.
-- **Практичность**: вывод не только цифр, но и конкретных действий.
-
----
-
-## Архитектура
-
-Система построена как набор сервисов с четким разделением ответственности:
-
-### 1) API-слой (`FastAPI`)
-
-- принимает запросы на аудит;
-- управляет lifecycle задач;
-- отдает результаты во frontend (Mini App);
-- предоставляет healthcheck и служебные эндпоинты.
-
-### 2) Сбор данных (`Telethon`)
-
-- подключается к Telegram API;
-- получает данные канала и постов за целевой период (30 дней);
-- сохраняет сырой и нормализованный слой данных.
-
-### 3) Аналитический слой
-
-- рассчитывает KPI: ER, частота, динамика охвата, реакций, распределение по форматам;
-- готовит фичи и summary для AI.
-
-### 4) AI-слой
-
-- интерпретирует метрики;
-- генерирует выводы и рекомендации;
-- формирует структурированный отчет для Mini App.
-
-### 5) Очереди и фоновые задачи (`Celery + Redis`)
-
-- запускает тяжелые и длительные задачи асинхронно;
-- изолирует API от долгих операций;
-- обеспечивает повторные попытки и масштабируемость воркеров.
-
-### 6) Хранилище (`PostgreSQL`)
-
-- хранит пользователей, запросы аудита, сырые данные, агрегаты и отчеты;
-- обеспечивает транзакционность и консистентность доменной модели.
-
-### 7) Клиент (`Next.js`, Telegram Mini App)
-
-- предоставляет UI отчета;
-- показывает прогресс обработки и итоговые рекомендации;
-- взаимодействует с backend API через защищенные эндпоинты.
-
----
-
-## Поток данных
-
-Пайплайн на высоком уровне:
-
-1. Пользователь в Mini App отправляет канал на аудит.
-2. `FastAPI` создает задачу и отправляет ее в `Celery`.
-3. Воркер через `Telethon` забирает данные Telegram.
-4. Данные проходят этап аналитической обработки.
-5. AI-модуль получает аналитический контекст и генерирует выводы.
-6. Итоговый отчет сохраняется в `PostgreSQL`.
-7. Mini App запрашивает статус/результат и отображает отчет пользователю.
-
-Схема:
+## Как это работает
 
 ```text
-Telegram -> Collector (Telethon) -> Analytics -> AI Engine -> API -> Mini App
-                      |                                |
-                      v                                v
-                   PostgreSQL <-> Celery/Redis <-> Task orchestration
+Браузер -> FastAPI -> Celery (через Redis) -> Telethon -> аналитика -> OpenAI -> PostgreSQL
+   ^                                                                                |
+   +------------------ опрос статуса GET /api/v1/audits/{id} -----------------------+
 ```
 
----
+1. `POST /api/v1/audits` проверяет имя канала, создаёт запись `pending` и ставит задачу в очередь.
+2. Воркер переводит аудит в `running`, забирает посты, считает метрики и запрашивает отчёт у модели.
+3. Успешный аудит получает статус `completed` и отчёт. Неудачный получает `failed` и понятное `error_message`.
+4. Фронт опрашивает `GET /api/v1/audits/{id}`, пока аудит не завершится.
 
-## Технологический стек
+Если AI недоступен, аудит завершается статусом `failed`. Заглушек вместо отчёта нет.
 
-### Backend
+## Стек
 
-- `Python 3.11+`
-- `FastAPI` — REST API и orchestration
-- `SQLAlchemy` + `Alembic` — ORM и миграции
-- `Celery` — фоновые задачи
-- `Redis` — брокер очередей/кэш
-- `Telethon` — интеграция с Telegram
-
-### AI / Data
-
-- `Pydantic` — валидация и структурирование данных
-- AI provider (OpenAI/совместимый API) — генерация рекомендаций
-- pandas/numpy (опционально) — дополнительные расчеты
-
-### Frontend
-
-- `Next.js` (App Router)
-- `TypeScript`
-- Telegram WebApp SDK
-
-### Инфраструктура
-
-- `Docker`, `Docker Compose`
-- `PostgreSQL`
-- `Nginx` (reverse proxy для VPS)
-- `GitHub Actions` (опционально для CI/CD)
-
----
+| Часть | Технологии |
+| --- | --- |
+| Backend | Python 3.12, FastAPI, Pydantic, slowapi |
+| База данных | PostgreSQL 16, SQLAlchemy (async), Alembic |
+| Фоновые задачи | Celery, Redis |
+| Внешние сервисы | Telethon, OpenAI API |
+| Frontend | React, Vite, TypeScript, Tailwind CSS, Recharts |
+| Инфраструктура | Docker Compose, Nginx (раздача фронта), GitHub Actions |
 
 ## Структура проекта
 
-Ниже целевая структура (рекомендуемая для развития проекта):
-
 ```text
-PulseTG/
-  backend/
-    app/
-      api/                 # FastAPI routers
-      core/                # config, security, settings
-      db/                  # models, session, migrations glue
-      services/            # analytics, ai, telegram collector
-      tasks/               # Celery tasks
-      schemas/             # Pydantic schemas
-      main.py              # FastAPI entrypoint
-    alembic/
-    requirements.txt
-    Dockerfile
-  frontend/
-    src/
-      app/                 # Next.js routes/pages
-      components/
-      lib/                 # api client, telegram sdk helpers
-    package.json
-    Dockerfile
-  infra/
-    docker/
-      docker-compose.yml
-      .env.example
-    nginx/
-      pulsetg.conf
-  scripts/
-    bootstrap.sh
-  README.md
+backend/
+  ai/          клиент OpenAI, проверка структуры отчёта
+  analytics/   расчёт метрик
+  api/         эндпоинты
+  core/        настройки, база, Redis, Celery, rate limit
+  migrations/  миграции Alembic
+  models/      ORM-модели
+  schemas/     Pydantic-схемы API
+  services/    сценарий аудита и задача Celery
+  telegram/    сбор постов через Telethon
+  tests/       тесты pytest
+frontend/      интерфейс на React + Vite
+scripts/       создание session-файла Telegram
 ```
 
----
+## Запуск
 
-## План разработки
-
-### Этап 1. Базовый каркас
-
-- инициализация backend и frontend;
-- настройка Docker-окружения (`api`, `db`, `redis`, `worker`, `frontend`);
-- базовая auth/идентификация пользователя Mini App.
-
-### Этап 2. Telegram ingestion
-
-- подключение `Telethon`;
-- сбор постов/метрик за 30 дней;
-- первичное сохранение данных в PostgreSQL.
-
-### Этап 3. Аналитика
-
-- расчет ключевых метрик;
-- нормализация и формирование аналитического профиля канала;
-- тесты на корректность расчетов.
-
-### Этап 4. AI-отчет
-
-- разработка prompt-стратегии;
-- генерация рекомендаций из аналитического профиля;
-- валидация структуры и качества ответов.
-
-### Этап 5. Mini App UI
-
-- экран ввода канала и статуса обработки;
-- страница отчета (метрики + рекомендации + визуализации);
-- обработка ошибок и ретраев.
-
-### Этап 6. Production readiness
-
-- мониторинг, логирование, алерты;
-- ограничение rate-limit, retries, idempotency;
-- hardening конфигурации и релиз на VPS.
-
----
-
-## Локальный запуск через Docker
-
-### 1. Предварительные требования
-
-- Docker Engine 24+
-- Docker Compose v2+
-- доступ к Telegram API (`API_ID`, `API_HASH`)
-- ключ AI-провайдера (`OPENAI_API_KEY` или аналог)
-
-### 2. Подготовка `.env`
-
-Создайте файл `.env` (или `infra/docker/.env`) на основе `.env.example`:
-
-```env
-# App
-APP_ENV=local
-APP_PORT=8000
-
-# PostgreSQL
-POSTGRES_DB=pulsetg
-POSTGRES_USER=pulsetg
-POSTGRES_PASSWORD=pulsetg
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-
-# Redis
-REDIS_HOST=redis
-REDIS_PORT=6379
-
-# Telegram
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-TELEGRAM_SESSION_NAME=pulsetg
-
-# AI
-OPENAI_API_KEY=your_api_key
-AI_MODEL=gpt-4o-mini
-
-# Frontend
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-```
-
-### 3. Запуск сервисов
+Нужны Docker с Compose, ключи Telegram API с https://my.telegram.org и ключ OpenAI.
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up --build -d
+cp .env.example .env
+# заполните значения в .env по комментариям
+PYTHONPATH=. python scripts/init_session.py   # один раз, нужен вход в Telegram
+docker compose up --build -d
 ```
 
-### 4. Миграции БД
+`scripts/init_session.py` запускается на вашей машине, а не в контейнере. Ему нужны зависимости из `backend/requirements.txt`. Он создаёт файл `backend/telegram/<TELEGRAM_SESSION_NAME>.session`, этот файл даёт доступ к вашему аккаунту Telegram и в git не попадает.
+
+Миграции применяются автоматически отдельным сервисом `migrate` при запуске.
+
+| Адрес | Что там |
+| --- | --- |
+| http://localhost:3000 | Веб-интерфейс |
+| http://localhost:8000/docs | Документация API |
+| http://localhost:8000/api/v1/health | Проверка состояния |
+
+## Тесты
+
+Тестам нужны настоящие PostgreSQL и Redis: модели используют типы UUID и JSONB, поэтому SQLite не подходит. Контейнеры из `docker-compose.test.yml` работают на отдельных портах и хранят данные в памяти, dev-база не затрагивается.
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml exec api alembic upgrade head
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements-dev.txt
+
+docker compose -f docker-compose.test.yml up -d --wait
+pytest --cov --cov-report=term-missing
+docker compose -f docker-compose.test.yml down
 ```
 
-### 5. Проверка
+Запускайте команды из корня репозитория.
 
-- API: `http://localhost:8000/docs`
-- Frontend: `http://localhost:3000`
-- Redis/Postgres: доступны внутри docker-сети
+Что важно знать:
 
-### 6. Остановка
+- Схема базы создаётся настоящими миграциями Alembic, отдельный тест проверяет их совпадение с моделями.
+- Исходящие соединения заблокированы через pytest-socket, разрешён только localhost. OpenAI и Telegram заменены моками.
+- Тесты не запустятся на базе, имя которой не заканчивается на `_test`.
 
-```bash
-docker compose -f infra/docker/docker-compose.yml down
-```
+Те же тесты запускаются в GitHub Actions на каждый push и pull request.
 
-Для полной очистки томов:
+## Известные ограничения
 
-```bash
-docker compose -f infra/docker/docker-compose.yml down -v
-```
-
----
-
-## Деплой на VPS
-
-Рекомендуемая схема: один VPS + Docker Compose + Nginx + SSL.
-
-### 1) Подготовка сервера
-
-- Ubuntu 22.04 LTS;
-- установить Docker/Compose;
-- открыть порты `80`, `443`, `22`;
-- создать пользователя для деплоя (без работы под `root`).
-
-### 2) Поставка приложения
-
-- клонировать репозиторий на сервер;
-- подготовить production `.env` (секреты только на сервере);
-- убедиться, что `DEBUG=false`, включены безопасные cookie/headers.
-
-### 3) Запуск сервисов
-
-```bash
-docker compose -f infra/docker/docker-compose.yml up --build -d
-docker compose -f infra/docker/docker-compose.yml exec api alembic upgrade head
-```
-
-### 4) Reverse proxy и SSL
-
-- Nginx проксирует:
-  - `/` -> `frontend:3000`
-  - `/api` -> `api:8000`
-- сертификаты через Let's Encrypt (`certbot` или `acme.sh`).
-
-### 5) Наблюдаемость и надежность
-
-- включить ротацию логов;
-- healthchecks для `api`, `worker`, `redis`, `db`;
-- резервные копии PostgreSQL (`pg_dump` по cron);
-- restart policy `unless-stopped`.
-
-### 6) CI/CD (минимальный сценарий)
-
-- push в `main` -> build образов -> deploy через SSH -> `docker compose pull && up -d`;
-- отдельно выполнять миграции и smoke-check после релиза.
-
----
-
-## Как создать Telegram session файл
-
-Runtime-сервисы (`api`, `worker`) не должны логиниться в Telegram интерактивно.
-Для этого session-файл создается заранее локально и затем передается в окружение запуска.
-
-### 1) Временный скрипт
-
-Используйте `scripts/init_session.py`.
-Скрипт:
-
-- читает `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_NAME` из `.env`;
-- запускает одноразовую интерактивную авторизацию локально;
-- создает файл `app/telegram/<TELEGRAM_SESSION_NAME>.session`.
-
-### 2) Локальный запуск скрипта
-
-```bash
-python scripts/init_session.py
-```
-
-После успешного выполнения должен появиться файл:
-
-```text
-app/telegram/pulsetg.session
-```
-
-### 3) Перенос session файла
-
-В production скопируйте этот файл на сервер в ту же директорию проекта:
-
-```text
-app/telegram/<TELEGRAM_SESSION_NAME>.session
-```
-
-В `docker-compose.yml` уже добавлен volume:
-
-```yaml
-- ./app/telegram:/app/app/telegram
-```
-
-Это позволяет контейнерам `api` и `worker` использовать существующую session без интерактивного входа.
-
----
-
-## Roadmap / дальнейшие улучшения
-
-- сравнение с конкурентами в нише;
-- рекомендательная система по лучшему времени публикаций;
-- A/B-оценка гипотез контента;
-- экспорт отчета (PDF/Notion/Google Docs);
-- мультиязычная поддержка отчетов.
-
----
+- Rate limit хранится в памяти процесса и считается по адресу соединения. За Nginx все пользователи выглядят как один адрес. При нескольких процессах API у каждого свой счётчик.
+- Если воркер упадёт посреди аудита, запись останется в статусе `running`. Задача, потерянная после постановки в очередь, оставит запись в `pending`.
+- Время публикаций считается в UTC, а не в часовом поясе аудитории канала.
+- Защита от инъекций в промпт снижает риск, но не исключает его. Пост может повлиять на текст отчёта, но код не выполнит ничего из ответа модели.
+- Повтор задачи запускает аудит заново, включая сбор постов из Telegram.
 
 ## Лицензия
 
-Выберите и добавьте лицензию (например, `MIT` или `Apache-2.0`) перед production-использованием.
+Лицензия пока не выбрана.
