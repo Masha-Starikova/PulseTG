@@ -8,6 +8,7 @@ from pytest_socket import SocketConnectBlockedError
 from backend.core.config import settings
 
 
+@pytest.mark.filterwarnings("ignore:A test tried to use socket")
 def test_outgoing_network_is_blocked() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         with pytest.raises(SocketConnectBlockedError):
