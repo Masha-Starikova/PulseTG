@@ -5,7 +5,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from kombu.exceptions import OperationalError
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import backend.core.redis as redis_state
@@ -60,6 +62,23 @@ class TestCreateAudit:
 
         assert response.status_code == 422
         queue.delay.assert_not_called()
+
+
+    async def test_queue_failure_does_not_leave_audit_pending(
+        self,
+        client: httpx.AsyncClient,
+        db_session: AsyncSession,
+        queue: MagicMock,
+    ) -> None:
+        queue.delay.side_effect = OperationalError("broker is down")
+
+        response = await client.post("/api/v1/audits", json={"channel_username": "channel"})
+
+        assert response.status_code == 503
+        assert "broker" not in response.json()["detail"]
+        audits = (await db_session.scalars(select(AuditRequest))).all()
+        assert [audit.status for audit in audits] == [AuditStatus.failed]
+        assert audits[0].error_message == response.json()["detail"]
 
 
 class TestGetAudit:
